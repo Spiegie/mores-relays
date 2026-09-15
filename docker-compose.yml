@@ -1,0 +1,66 @@
+version: '3.8'
+
+services:
+  # Main Morse Chat Server
+  morse-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: morse-chat:latest
+    container_name: morse-server
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
+      # Uncomment and set admin token for admin features
+      # - ADMIN_TOKEN=your-secret-token
+    ports:
+      - "7002:7002"   # WebSocket + HTTP health
+    entrypoint: ["tsx", "morse-relais.ts"]
+    command: ["server", "--port", "7002", "--name", "server-1"]
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:7002/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+  # Optional: Nginx reverse proxy with TLS
+  nginx:
+    image: nginx:alpine
+    container_name: morse-nginx
+    restart: unless-stopped
+    depends_on:
+      - morse-server
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./ssl:/etc/nginx/ssl:ro
+      - ./dist:/usr/share/nginx/html:ro
+    profiles:
+      - production
+
+  # Optional: Vite dev server for development
+  morse-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: morse-chat:dev
+    container_name: morse-dev
+    environment:
+      - NODE_ENV=development
+    ports:
+      - "3000:3000"   # Vite dev server
+    entrypoint: ["npx", "vite"]
+    command: ["dev", "--host", "0.0.0.0", "--port", "3000"]
+    profiles:
+      - development
+    volumes:
+      - .:/app
+      - /app/node_modules
+
+networks:
+  default:
+    name: morse-network
+    driver: bridge
