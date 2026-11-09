@@ -1,5 +1,7 @@
 # Morse Chat
 
+Repository: [github.com/Spiegie/mores-relays](https://github.com/Spiegie/mores-relays)
+
 A chat where nobody types text. Participants key Morse code using the spacebar or a touch button; the raw on/off timing signals travel over WebSocket to a server and are relayed to everyone in the room. Text only comes into existence at the receiving end, when each client decodes the signal timing into characters.
 
 ## How it works
@@ -24,6 +26,10 @@ Browser client ──WebSocket──▶ Server ──▶ all clients in the room
 - Replay: recorded signals can be played back via WebAudio, timed exactly by timestamp
 - Extended Morse table incl. German umlauts (Ä Ö Ü ß), punctuation and prosigns (SOS, SK, VE)
 - HTTP health endpoint on the same port as the WebSocket server
+
+## Data retention
+
+No data is permanently saved. The server keeps all state — clients, rooms, room passwords, admin sessions — in memory only, so a restart is always possible and resets the complete server state. The only stored value is your personal keying-speed calibration (`morse-unit`) in your own browser's localStorage, which never leaves your device.
 
 ## Quick start (development)
 
@@ -66,7 +72,7 @@ Health check: `curl http://localhost:7002/health`
 
 ## Deployment
 
-Docker, Buildah/Podman, Docker Compose and a production setup with nginx (TLS, WSS) are described in [DEPLOYMENT.md](DEPLOYMENT.md). A Nix flake is provided for Nix users.
+Docker, Buildah/Podman and Docker Compose are described in [DEPLOYMENT.md](DEPLOYMENT.md), including an nginx TLS example (development profile — for production you decide yourself how to expose the service). A Nix flake is provided for Nix users.
 
 ## Project structure
 
@@ -77,7 +83,7 @@ Docker, Buildah/Podman, Docker Compose and a production setup with nginx (TLS, W
 ├── index.html                       # HTML shell
 ├── vite.config.ts                   # Vite config (dev proxy /ws -> 7002)
 ├── Dockerfile / Buildahfile         # Container builds
-├── docker-compose.yml               # Dev + production profiles
+├── docker-compose.yml               # Services + development profiles (incl. nginx TLS example)
 ├── nginx.conf                       # TLS termination + WebSocket proxy
 └── flake.nix                        # Nix build & dev shell
 ```

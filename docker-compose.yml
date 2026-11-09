@@ -16,9 +16,10 @@ services:
       # Passed via env (not CLI) so it doesn't show up in `docker inspect`.
       - ADMIN_TOKEN=${ADMIN_TOKEN:-}
     ports:
-      # Localhost only: the backend must not be reachable from the web.
-      # Public traffic goes through nginx (production profile) on 80/443,
-      # which reaches this service over the internal compose network.
+      # Localhost only: the backend should not be exposed directly.
+      # For public access put a reverse proxy in front (see the nginx
+      # example in the development profile) — how you do that in
+      # production is up to you.
       - "127.0.0.1:7002:7002"   # WebSocket + HTTP health (local only)
     # The registry image already sets the entrypoint (node + tsx + morse-relais.ts);
     # only the server args are overridden here.
@@ -39,7 +40,9 @@ services:
     # No healthcheck override: the registry image ships its own (node fetch /health);
     # the nix image has no wget.
 
-  # Optional: Nginx reverse proxy with TLS
+  # Example: Nginx reverse proxy with TLS, grouped under the development
+  # profile. For production you decide yourself how to expose the service
+  # (own reverse proxy, TLS termination, published ports, ...).
   nginx:
     image: nginx:alpine
     container_name: morse-nginx
@@ -61,7 +64,7 @@ services:
         max-size: "10m"
         max-file: "3"
     profiles:
-      - production
+      - development
 
   # Optional: Vite dev server for development
   morse-dev:

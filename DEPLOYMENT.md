@@ -78,9 +78,12 @@ docker run -d --name morse-server \
 Note: admin features are disabled entirely unless `--admin-token` is set.
 
 
-## Production Deployment with TLS
+## TLS / reverse proxy example (nginx)
 
-For production deployment with HTTPS and WSS:
+The `nginx` service in `docker-compose.yml` is an **example** grouped under the
+`development` profile. For production you decide yourself how to expose the
+service (your own reverse proxy, TLS termination, published ports, ...).
+The example below shows one way with nginx:
 
 ### Step 1: Prepare SSL Certificates
 
@@ -107,8 +110,10 @@ Edit `nginx.conf` and update:
 ### Step 4: Deploy with Docker Compose
 
 ```bash
-# Start all services including nginx
-docker-compose --profile production up -d
+# Start the server plus the nginx example (development profile)
+docker-compose --profile development up -d
+# or only server + nginx, without the vite dev service:
+docker-compose --profile development up -d morse-server nginx
 ```
 
 This will:
@@ -128,8 +133,10 @@ The browser client automatically derives its WebSocket URL from the page origin,
 For development with hot-reload:
 
 ```bash
-# Start with development profile
+# Start with development profile (morse-server + vite dev + nginx example)
 docker-compose --profile development up -d
+# or only the vite dev service on top of an already running server:
+docker-compose --profile development up -d morse-dev
 
 # Or run Vite dev server directly
 npm run dev
@@ -307,8 +314,8 @@ change rooms with `leave` + `join`.
 |------|----------|---------|---------|
 | 7002 | TCP | WebSocket + HTTP health | Yes |
 | 3001 | TCP | Vite dev server (development only) | Optional |
-| 80 | TCP | Nginx HTTP (production) | Optional |
-| 443 | TCP | Nginx HTTPS (production) | Optional |
+| 80 | TCP | Nginx HTTP (TLS example) | Optional |
+| 443 | TCP | Nginx HTTPS (TLS example) | Optional |
 
 ## Files Reference
 
