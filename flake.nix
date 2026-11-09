@@ -29,7 +29,7 @@
             mkdir -p $out
             cp -r dist $out/dist
             cp -r node_modules $out/node_modules
-            cp morse-relais.ts package.json $out/
+            cp morse-relais.ts package.json LICENSE $out/
 
             runHook postInstall
           '';
