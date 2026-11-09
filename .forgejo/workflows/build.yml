@@ -1,0 +1,27 @@
+name: Build OCI image with Nix and push to the Forgejo registry
+on: [push]
+jobs:
+  build:
+    runs-on: nix
+    steps:
+      - name: Checkout
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          nix --extra-experimental-features 'nix-command flakes' --option sandbox false shell nixpkgs#git -c \
+            git clone --depth 1 "https://x-access-token:${TOKEN}@code.spiegie.de/${GITHUB_REPOSITORY}.git" .
+
+      - name: Build OCI image
+        run: |
+          nix --extra-experimental-features 'nix-command flakes' --option sandbox false build --print-build-logs .#dockerImage
+
+      - name: Push to the Forgejo registry
+        env:
+          TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+        run: |
+          cat > policy.json <<'J'
+          { "default": [ { "type": "insecureAcceptAnything" } ] }
+          J
+          nix --extra-experimental-features 'nix-command flakes' --option sandbox false run nixpkgs#skopeo -- \
+            --policy ./policy.json copy --dest-creds "spiegie:${TOKEN}" \
+            docker-archive://"$(readlink -f ./result)" docker://code.spiegie.de/spiegie/morse-relay:latest
