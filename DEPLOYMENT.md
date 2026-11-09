@@ -202,9 +202,9 @@ docker exec -it morse-server sh
 # Inside container: use a WebSocket client to authenticate and create room
 ```
 
-Or send these messages via WebSocket:
+Or send these messages via WebSocket (see "Admin Access and WebSocket Protocol" below):
 ```json
-// Authenticate as admin (requires --admin-token on the server)
+// Authenticate as admin (requires ADMIN_TOKEN on the server)
 {"t": "auth", "token": "your-admin-token"}
 
 // Create password-protected room
@@ -220,6 +220,65 @@ Join a room with a BPM suffix to set the timing:
 ```
 
 This sets the dit length to 200ms (60000/300).
+
+## Admin Access and WebSocket Protocol
+
+The frontend has no admin UI. Admin actions are WebSocket messages sent on an
+authenticated connection. Admin status is **per connection** (it does not
+survive a reconnect) and requires the server to have `ADMIN_TOKEN` set (env
+var, or `--admin-token` CLI flag which takes precedence). If the server has no
+token configured, every `auth` fails with `invalid token`.
+
+### Become admin from the browser console (one-liner)
+
+Open the app page, open the devtools console (F12), and paste:
+
+```js
+var ws = new WebSocket((location.protocol==='https:'?'wss:':'ws:')+'//'+location.host+'/ws'); ws.onopen=()=>ws.send(JSON.stringify({t:'auth',token:'PUT_TOKEN_HERE'})); ws.onmessage=e=>console.log('reply:',e.data); ws.onerror=()=>console.log('ws error'); ws.onclose=e=>console.log('closed',e.code,e.reason)
+```
+
+Replace `PUT_TOKEN_HERE` with the server's `ADMIN_TOKEN` (the `.env` file next
+to `docker-compose.yml`). A successful auth logs `reply: {"t":"admin-ok"}`.
+
+Console notes (Firefox/Chrome):
+
+- The console echoing `function onopen` after the paste is normal — that is the
+  value of the assignment, the handler was registered.
+- `ws.send(...)` returns `undefined` — that is normal; the reply arrives
+  asynchronously via `onmessage`.
+- Use `var`, not `const`, if you paste the snippet twice — redeclaring
+  `const ws` throws `SyntaxError: redeclaration of const ws`.
+- If a socket is already open (`ws.readyState === 1`), skip creating a new one
+  and just re-send: `ws.send(JSON.stringify({t:'auth',token:'...'}))`.
+
+### Client → server messages
+
+| Message | Fields | Reply / effect |
+|---------|--------|----------------|
+| `{"t":"hello","nick":"bob"}` | `nick` (trimmed, max 32 chars) | sets nick; replies `rooms` |
+| `{"t":"join","room":"lobby@300","pass":"..."}` | `room` (max 64 chars; `@BPM` suffix sets dit length), optional `pass` | `presence` to you and the room; wrong password → `error` |
+| `{"t":"leave","room":"lobby"}` | `room` | `presence` with empty `nicks` |
+| `{"t":"signal","room":"lobby","on":true,"ts":1700000000000}` | `room`, `on` (bool), `ts` (finite number, ms) | broadcasts `signal` to the room; must be in the room |
+| `{"t":"list"}` | — | replies `rooms` |
+| `{"t":"auth","token":"..."}` | `token` | `admin-ok`, or `error: invalid token` |
+| `{"t":"create-room","room":"secret","pass":"pw"}` | admin only | with `pass`: `admin-ok`; re-sending with a new `pass` changes the room password; without `pass`: no reply |
+| `{"t":"delete-room","room":"secret"}` | admin only | `admin-ok`; all room members receive `room-deleted` |
+| `{"t":"announce","name":"s1","host":"h","port":7002}` | admin only | logged server-side only; replies `admin-ok` |
+
+### Server → client messages
+
+| Message | Meaning |
+|---------|---------|
+| `{"t":"rooms","list":[...]}` | room list (after `hello` / `list`) |
+| `{"t":"presence","room","nicks":[...]}` | room membership changed |
+| `{"t":"signal","room","on","ts","nick","srv"}` | morse key signal from a room member |
+| `{"t":"error","msg":"..."}` | e.g. `invalid token`, `not authorized`, `wrong password for #room`, `not in room`, `invalid room name` |
+| `{"t":"admin-ok","msg"?}` | admin action accepted |
+| `{"t":"room-deleted","room"}` | the room you were in was deleted by an admin |
+
+There is no separate "change room password" command: send `create-room` again
+with a new `pass` (it overwrites the stored hash), or `delete-room`. Users
+change rooms with `leave` + `join`.
 
 ## Troubleshooting
 
