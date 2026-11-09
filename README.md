@@ -1,7 +1,5 @@
 # Morse Chat
 
-Repository: [github.com/Spiegie/mores-relays](https://github.com/Spiegie/mores-relays)
-
 A chat where nobody types text. Participants key Morse code using the spacebar or a touch button; the raw on/off timing signals travel over WebSocket to a server and are relayed to everyone in the room. Text only comes into existence at the receiving end, when each client decodes the signal timing into characters.
 
 ## How it works

@@ -899,6 +899,12 @@ export default function App() {
           </div>
         </div>
       )}
+
+      {/* footer */}
+      <footer className="border-t border-zinc-800 px-4 py-2 flex items-center gap-3 flex-wrap text-[11px] text-zinc-600">
+        <span>No data is permanently saved — a server restart resets all rooms and state.</span>
+        <a href="https://github.com/Spiegie/mores-relays" target="_blank" rel="noreferrer" className="ml-auto underline hover:text-amber-400">github.com/Spiegie/mores-relays</a>
+      </footer>
     </div>
   );
 }
