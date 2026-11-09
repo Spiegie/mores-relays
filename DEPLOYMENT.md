@@ -55,7 +55,7 @@ podman run -d --name morse-app -p 7002:7002 federated-morse-chat:latest
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `NODE_ENV` | production | Node.js environment |
-| `ADMIN_TOKEN` | - | Admin authentication token (set via `--admin-token`) |
+| `ADMIN_TOKEN` | - | Admin authentication token (env var; `--admin-token` CLI flag takes precedence). Prefer the env var so the token doesn't appear in `docker inspect` / `ps` |
 
 ### Command Line Options
 
@@ -229,7 +229,7 @@ This sets the dit length to 200ms (60000/300).
 
 2. **WebSocket URL**: Ensure you're using `ws://` (not `wss://`) for local development, or `wss://` for production with TLS.
 
-3. **CORS**: The server allows all origins by default. If you need to restrict, modify the server code.
+3. **CORS / Origin**: The server rejects WebSocket upgrades whose `Origin` header doesn't match the request host (localhost origins are allowed for development; non-browser clients without an `Origin` header are allowed). If you proxy under a different host, make sure the proxy forwards the original `Host` header (the provided nginx.conf does).
 
 ### Build Errors
 

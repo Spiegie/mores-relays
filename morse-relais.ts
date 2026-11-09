@@ -7,7 +7,11 @@
 
 import { WebSocketServer, WebSocket } from 'ws';
 import { createHash, timingSafeEqual } from 'crypto';
-import { createServer } from 'http';
+import { createServer, IncomingMessage, ServerResponse } from 'http';
+import { readFile } from 'fs/promises';
+import { existsSync, statSync } from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 
 // ---------------------------------------------------------------------------
 //  Configuration
@@ -26,34 +30,42 @@ interface ServerConfig {
 class MorseRelayServer {
   private wss: WebSocketServer;
   private httpServer: ReturnType<typeof createServer>;
-  private clients: Map<WebSocket, { id: string; nick: string; rooms: Set<string> }>;
+  private clients: Map<WebSocket, { id: string; nick: string; rooms: Set<string>; msgTimes: number[] }>;
   private rooms: Map<string, Set<WebSocket>>;
   private roomPasses: Map<string, string>;
   private id: string;
   private config: ServerConfig;
   private admins: Set<WebSocket>;
+  private distDir: string;
 
   constructor(config: ServerConfig) {
     this.config = config;
     this.id = `${config.name || 'server'}-${Date.now()}`;
+    // dist/ sits next to this file both in the repo and in the nix/docker image
+    this.distDir = path.join(path.dirname(fileURLToPath(import.meta.url)), 'dist');
     this.clients = new Map();
     this.rooms = new Map();
     this.roomPasses = new Map();
     this.admins = new Set();
 
-    // HTTP server: health endpoint + WebSocket upgrade
+    // HTTP server: health endpoint + static frontend + WebSocket upgrade
     this.httpServer = createServer((req, res) => {
-      if (req.method === 'GET' && (req.url === '/health' || req.url === '/')) {
+      if (req.method === 'GET' && req.url === '/health') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true, name: this.config.name, clients: this.clients.size }));
+        return;
+      }
+      if (req.method === 'GET' || req.method === 'HEAD') {
+        this.serveStatic(req, res);
         return;
       }
       res.writeHead(404, { 'Content-Type': 'text/plain' });
       res.end('not found');
     });
 
-    // Create WebSocket server on top of the HTTP server
-    this.wss = new WebSocketServer({ server: this.httpServer });
+    // Create WebSocket server on top of the HTTP server.
+    // maxPayload caps message size: signals are tiny JSON, 16 KiB is generous.
+    this.wss = new WebSocketServer({ server: this.httpServer, maxPayload: 16 * 1024 });
 
     // Set up WebSocket routing
     this.setupWebSocket();
@@ -63,9 +75,88 @@ class MorseRelayServer {
   }
 
   private setupWebSocket(): void {
-    this.wss.on('connection', (ws: WebSocket) => {
+    this.wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
+      if (!this.originAllowed(req)) {
+        ws.close(1008, 'origin not allowed');
+        return;
+      }
       this.handleClient(ws);
     });
+  }
+
+  // Browsers always send an Origin header on WebSocket upgrades; non-browser
+  // clients usually don't. Allow same-host origins and localhost (dev),
+  // reject everything else to prevent cross-site WebSocket hijacking.
+  private originAllowed(req: IncomingMessage): boolean {
+    const origin = req.headers.origin;
+    if (!origin) return true;
+    let originHost: string;
+    try {
+      originHost = new URL(origin).host;
+    } catch {
+      return false;
+    }
+    if (originHost === (req.headers.host || '')) return true;
+    const hostname = originHost.split(':')[0];
+    return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]';
+  }
+
+  // Serves the built frontend (Vite output in dist/). Extensionless paths
+  // fall back to index.html so SPA routing works; hashed assets are immutable.
+  private async serveStatic(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    let pathname: string;
+    try {
+      pathname = decodeURIComponent(new URL(req.url || '/', 'http://localhost').pathname);
+    } catch {
+      res.writeHead(400, { 'Content-Type': 'text/plain' });
+      res.end('bad request');
+      return;
+    }
+
+    const rel = path.normalize(pathname).replace(/^[/\\]+/, '');
+    const filePath = path.join(this.distDir, rel);
+    if (filePath !== this.distDir && !filePath.startsWith(this.distDir + path.sep)) {
+      res.writeHead(403, { 'Content-Type': 'text/plain' });
+      res.end('forbidden');
+      return;
+    }
+
+    let target = filePath;
+    if (!existsSync(target) || !statSync(target).isFile()) {
+      if (!path.extname(pathname)) {
+        target = path.join(this.distDir, 'index.html');
+      } else {
+        res.writeHead(404, { 'Content-Type': 'text/plain' });
+        res.end('not found');
+        return;
+      }
+    }
+
+    const types: Record<string, string> = {
+      '.html': 'text/html; charset=utf-8',
+      '.js': 'text/javascript; charset=utf-8',
+      '.css': 'text/css; charset=utf-8',
+      '.json': 'application/json',
+      '.map': 'application/json',
+      '.svg': 'image/svg+xml',
+      '.png': 'image/png',
+      '.ico': 'image/x-icon',
+      '.txt': 'text/plain; charset=utf-8',
+      '.webmanifest': 'application/manifest+json',
+      '.woff2': 'font/woff2',
+    };
+    const ext = path.extname(target).toLowerCase();
+    const type = types[ext] || 'application/octet-stream';
+    const cache = ext === '.html' ? 'no-cache' : 'public, max-age=31536000, immutable';
+
+    try {
+      const body = await readFile(target);
+      res.writeHead(200, { 'Content-Type': type, 'Cache-Control': cache });
+      res.end(req.method === 'HEAD' ? undefined : body);
+    } catch {
+      res.writeHead(404, { 'Content-Type': 'text/plain' });
+      res.end('not found');
+    }
   }
 
   private start(): void {
@@ -81,6 +172,9 @@ class MorseRelayServer {
     this.httpServer.listen(this.config.port, () => {
       console.log(`WebSocket server running on ws://localhost:${this.config.port}`);
       console.log(`Health endpoint: http://localhost:${this.config.port}/health`);
+      console.log(existsSync(path.join(this.distDir, 'index.html'))
+        ? `Frontend: http://localhost:${this.config.port}/`
+        : 'Frontend: dist/ not found, serving API only (run `npm run build`)');
       console.log(`Server ID: ${this.id}, Name: ${this.config.name}`);
     });
   }
@@ -106,11 +200,33 @@ class MorseRelayServer {
       id: clientId,
       nick: 'anon',
       rooms: new Set(),
+      msgTimes: [],
     });
 
     ws.on('message', (data) => {
+      const client = this.clients.get(ws);
+      if (!client) return;
+
+      // Sliding-window rate limit: a keyer at 375 BPM sends ~13 msg/s
+      // (on+off per element); 120 msg/s leaves generous headroom.
+      const now = Date.now();
+      client.msgTimes.push(now);
+      while (client.msgTimes.length > 0 && client.msgTimes[0] <= now - 1000) {
+        client.msgTimes.shift();
+      }
+      if (client.msgTimes.length > 120) {
+        console.warn(`Rate limit exceeded for ${client.nick} (${client.id}), closing`);
+        ws.close(1008, 'rate limit exceeded');
+        this.removeClient(ws);
+        return;
+      }
+
       try {
         const msg = JSON.parse(data.toString());
+        if (!msg || typeof msg !== 'object' || typeof msg.t !== 'string') {
+          this.send(ws, { t: 'error', msg: 'malformed message' });
+          return;
+        }
         this.handleClientMessage(ws, msg);
       } catch (err) {
         console.error('Error parsing client message:', err);
@@ -241,7 +357,7 @@ class MorseRelayServer {
       this.send(ws, { t: 'error', msg: 'invalid room name' });
       return;
     }
-    const pass = typeof msg.pass === 'string' ? msg.pass : '';
+    const pass = typeof msg.pass === 'string' ? msg.pass.slice(0, 256) : '';
 
     // Check password
     const wanted = this.sha256(pass ?? '');
@@ -329,6 +445,10 @@ class MorseRelayServer {
     }
 
     const { on, ts } = msg;
+    if (typeof on !== 'boolean' || typeof ts !== 'number' || !Number.isFinite(ts)) {
+      this.send(ws, { t: 'error', msg: 'invalid signal' });
+      return;
+    }
 
     // Broadcast to room
     this.broadcastToRoom(room, ws, {
@@ -454,6 +574,11 @@ function parseArgs(args: string[]): ServerConfig {
     }
   }
 
+  // Env fallback (CLI wins); empty string counts as unset.
+  if (!config.adminToken && process.env.ADMIN_TOKEN) {
+    config.adminToken = process.env.ADMIN_TOKEN;
+  }
+
   return config as ServerConfig;
 }
 
@@ -468,7 +593,7 @@ Usage:
 Server Options:
   --port <port>        WebSocket server port (default: 7002)
   --name <name>       Server name (default: morse-server)
-  --admin-token <token>   Admin authentication token
+  --admin-token <token>   Admin authentication token (or ADMIN_TOKEN env var)
 
 Example:
   tsx morse-relais.ts server --port 7002 --name my-server

@@ -19,7 +19,7 @@
           src = self;
 
           inherit nodejs;
-          npmDepsHash = "sha256-IsGgY1Viw7ptuAiXA1rTPoPMyhAOcVJcOHdVwdEZwZs=";
+          npmDepsHash = "sha256-UZ4iWL3a39yYrhn1tj6DYF1RSWGmOAYa/1mF2dTl7g4=";
 
           npmBuildScript = "build";
 

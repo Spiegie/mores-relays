@@ -35,9 +35,11 @@ RUN adduser -D -s /bin/sh morseuser
 # Create app directory
 WORKDIR /app
 
+# Install only production dependencies (server needs just "ws")
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev && npm cache clean --force
+
 # Copy only what the server needs from the builder
-COPY --from=builder /app/package.json ./
-COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/morse-relais.ts ./
 COPY --from=builder /app/dist ./dist
 
