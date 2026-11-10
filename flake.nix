@@ -11,6 +11,50 @@
         pkgs = import nixpkgs { inherit system; };
         nodejs = pkgs.nodejs_22;
 
+        # Playwright MCP server for browser automation. Pinned to the
+        # @playwright/mcp release line whose playwright-core matches the
+        # playwright version in this flake's nixpkgs (1.63.0), so the
+        # browser revisions in nixpkgs' playwright.browsers (chromium 1243,
+        # firefox 1543, webkit 2359) resolve exactly. The vendored
+        # package.json/lock in nix/playwright-mcp/ pin playwright-core to
+        # the stable 1.63.0 instead of the upstream alpha. The wrapper
+        # points PLAYWRIGHT_BROWSERS_PATH at the nixpkgs browsers so
+        # nothing is ever downloaded at runtime.
+        playwright-mcp = pkgs.buildNpmPackage {
+          pname = "playwright-mcp";
+          version = "0.0.80";
+          # The npm tarball ships no lockfile and pins an alpha playwright.
+          # Build the source ourselves and drop in the vendored
+          # package.json + lock (see nix/playwright-mcp/), which pin
+          # playwright-core to the stable 1.63.0 that matches the nixpkgs
+          # browsers. postPatch cannot be used for this because the npmDeps
+          # fixed-output derivation evaluates its own phases.
+          src = pkgs.runCommand "playwright-mcp-0.0.80-src" { } ''
+            mkdir -p $out
+            tar -xf ${pkgs.fetchurl {
+              name = "playwright-mcp-0.0.80.tar.gz";
+              url = "https://registry.npmjs.org/@playwright/mcp/-/mcp-0.0.80.tgz";
+              hash = "sha256-uB7aPwp8xwqcr321IM2tWMSKHdM0tOP88JbAUSyYrw0=";
+            }} --strip-components=1 -C $out
+            cp ${./nix/playwright-mcp/package.json} $out/package.json
+            cp ${./nix/playwright-mcp/package-lock.json} $out/package-lock.json
+          '';
+          npmDepsHash = "sha256-l0wNESCjqjuSQDY3C/KIA5zbBuHNQqf7FyXJaO6sZk4=";
+          # playwright's postinstall would try to download browsers; the
+          # browsers come from nixpkgs instead.
+          npmFlags = [ "--ignore-scripts" ];
+          dontNpmBuild = true;
+          postInstall = ''
+            mkdir -p $out/bin
+            substitute ${./nix/playwright-mcp/wrapper.sh} $out/bin/mcp-server-playwright \
+              --replace @browsers@ "${pkgs.playwright.browsers}" \
+              --replace @node@ "${nodejs}" \
+              --replace @out@ "$out"
+            chmod +x $out/bin/mcp-server-playwright
+          '';
+          meta.mainProgram = "mcp-server-playwright";
+        };
+
         # Builds the Vite client (dist/) and ships the full node_modules
         # (incl. tsx) plus the server, mirroring the Dockerfile layout.
         morse-chat = pkgs.buildNpmPackage {
@@ -84,7 +128,7 @@
       in
       {
         packages = {
-          inherit dockerImage;
+          inherit dockerImage playwright-mcp;
           default = dockerImage;
         };
 
