@@ -19,7 +19,7 @@ Browser client ──WebSocket──▶ Server ──▶ all clients in the room
 
 - Real-time Morse relay over WebSocket with room-based presence
 - Optional password-protected rooms (SHA-256 hashed)
-- Admin mode (`--admin-token`) to create/delete rooms and set passwords
+- Admin panel (`--admin-token`): live server stats, create/delete rooms, set/remove room passwords, kick clients, broadcast announcements
 - Message accumulation: decoded letters collect into lines, flushed after idle
 - Replay: recorded signals can be played back via WebAudio, timed exactly by timestamp
 - Extended Morse table incl. German umlauts (Ä Ö Ü ß), punctuation and prosigns (SOS, SK, VE)
@@ -66,7 +66,7 @@ Health check: `curl http://localhost:7002/health`
 - Rooms are implicit: joining creates the room if it does not exist.
 - `lobby@300` joins a room that sets the tempo to 300 BPM (200 ms dit). Note that `lobby` and `lobby@300` are different rooms.
 - Passwords can only be set when a room is created; an existing room cannot be hijacked by re-creating it with a different password.
-- Admins can delete rooms, which kicks all clients in that room.
+- Admins can set or remove the password of any room, and delete rooms, which kicks all clients in that room.
 
 ## Deployment
 

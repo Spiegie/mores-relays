@@ -28,6 +28,9 @@ npm-debug.log*
 # Test coverage
 coverage/
 
+# Playwright MCP output (console/page logs from E2E runs)
+.playwright-mcp/
+
 # Temporary files
 tmp/
 temp/

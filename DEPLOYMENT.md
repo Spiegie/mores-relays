@@ -202,14 +202,11 @@ docker-compose ps
 
 ### Room with Password
 
-To create a password-protected room:
-```bash
-# Connect to server with admin token
-docker exec -it morse-server sh
-# Inside container: use a WebSocket client to authenticate and create room
-```
+The easiest way is the admin panel in the frontend (header button "Admin"):
+sign in with the admin token, then use the Rooms section to create a room with
+a password, or set/remove the password of an existing room.
 
-Or send these messages via WebSocket (see "Admin Access and WebSocket Protocol" below):
+Alternatively, send these messages via WebSocket (see "Admin Access and WebSocket Protocol" below):
 ```json
 // Authenticate as admin (requires ADMIN_TOKEN on the server)
 {"t": "auth", "token": "your-admin-token"}
@@ -230,15 +227,20 @@ This sets the dit length to 200ms (60000/300).
 
 ## Admin Access and WebSocket Protocol
 
-The frontend has no admin UI. Admin actions are WebSocket messages sent on an
-authenticated connection. Admin status is **per connection** (it does not
-survive a reconnect) and requires the server to have `ADMIN_TOKEN` set (env
+The frontend has a built-in **admin panel** (header button "Admin"): sign in
+with the server's admin token to see live server stats, create/delete rooms,
+set or remove room passwords, kick clients, and send announcements to everyone
+or to a single room. The token stays in the browser tab's memory only; admin
+status is per WebSocket connection and is re-established automatically on
+reconnect. Admin actions require the server to have `ADMIN_TOKEN` set (env
 var, or `--admin-token` CLI flag which takes precedence). If the server has no
 token configured, every `auth` fails with `invalid token`.
 
-### Become admin from the browser console (one-liner)
+Every admin action is logged server-side with the admin's client id and nick
+(`[admin <id>/<nick>] <action>: <detail>`), so actions are traceable.
 
-Open the app page, open the devtools console (F12), and paste:
+Alternatively, admin actions are plain WebSocket messages and can be sent from
+the browser console:
 
 ```js
 var ws = new WebSocket((location.protocol==='https:'?'wss:':'ws:')+'//'+location.host+'/ws'); ws.onopen=()=>ws.send(JSON.stringify({t:'auth',token:'PUT_TOKEN_HERE'})); ws.onmessage=e=>console.log('reply:',e.data); ws.onerror=()=>console.log('ws error'); ws.onclose=e=>console.log('closed',e.code,e.reason)
@@ -268,24 +270,30 @@ Console notes (Firefox/Chrome):
 | `{"t":"signal","room":"lobby","on":true,"ts":1700000000000}` | `room`, `on` (bool), `ts` (finite number, ms) | broadcasts `signal` to the room; must be in the room |
 | `{"t":"list"}` | — | replies `rooms` |
 | `{"t":"auth","token":"..."}` | `token` | `admin-ok`, or `error: invalid token` |
-| `{"t":"create-room","room":"secret","pass":"pw"}` | admin only | with `pass`: `admin-ok`; re-sending with a new `pass` changes the room password; without `pass`: no reply |
+| `{"t":"create-room","room":"secret","pass":"pw"}` | admin only | `admin-ok`; with `pass` the room password is set (re-sending with a new `pass` overwrites it) |
 | `{"t":"delete-room","room":"secret"}` | admin only | `admin-ok`; all room members receive `room-deleted` |
+| `{"t":"admin-stats"}` | admin only | replies `admin-stats` (server name, uptime, clients, rooms) |
+| `{"t":"admin-kick","clientId":"...","reason"?: "..."}` | admin only | disconnects the client; it receives `kicked` first; replies `admin-ok` |
+| `{"t":"admin-set-pass","room":"secret","pass":"pw"}` | admin only | sets the room password; empty `pass` removes it; replies `admin-ok` |
+| `{"t":"admin-broadcast","msg":"...","room"?: "lobby"}` | admin only | sends `admin-broadcast` to all clients, or only one room; replies `admin-ok` |
 | `{"t":"announce","name":"s1","host":"h","port":7002}` | admin only | logged server-side only; replies `admin-ok` |
 
 ### Server → client messages
 
 | Message | Meaning |
 |---------|---------|
-| `{"t":"rooms","list":[...]}` | room list (after `hello` / `list`) |
+| `{"t":"rooms","list":[...]}` | room list (after `hello` / `list`, and whenever a room is created or destroyed) |
 | `{"t":"presence","room","nicks":[...]}` | room membership changed |
 | `{"t":"signal","room","on","ts","nick","srv"}` | morse key signal from a room member |
 | `{"t":"error","msg":"..."}` | e.g. `invalid token`, `not authorized`, `wrong password for #room`, `not in room`, `invalid room name` |
 | `{"t":"admin-ok","msg"?}` | admin action accepted |
+| `{"t":"admin-stats","name","uptime","clients":[{id,nick,rooms,connectedAt}],"rooms":[{name,members,hasPass}]}` | reply to `admin-stats` |
+| `{"t":"admin-broadcast","msg":"..."}` | announcement from an admin |
+| `{"t":"kicked","msg"?}` | you were kicked by an admin; the connection closes right after |
 | `{"t":"room-deleted","room"}` | the room you were in was deleted by an admin |
 
-There is no separate "change room password" command: send `create-room` again
-with a new `pass` (it overwrites the stored hash), or `delete-room`. Users
-change rooms with `leave` + `join`.
+Admins change or remove a room password with `admin-set-pass` (or `create-room`
+with a new `pass`). Users change rooms with `leave` + `join`.
 
 ## Troubleshooting
 

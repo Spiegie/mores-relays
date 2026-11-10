@@ -30,17 +30,19 @@ interface ServerConfig {
 class MorseRelayServer {
   private wss: WebSocketServer;
   private httpServer: ReturnType<typeof createServer>;
-  private clients: Map<WebSocket, { id: string; nick: string; rooms: Set<string>; msgTimes: number[] }>;
+  private clients: Map<WebSocket, { id: string; nick: string; rooms: Set<string>; msgTimes: number[]; connectedAt: number }>;
   private rooms: Map<string, Set<WebSocket>>;
   private roomPasses: Map<string, string>;
   private id: string;
   private config: ServerConfig;
   private admins: Set<WebSocket>;
   private distDir: string;
+  private startedAt: number;
 
   constructor(config: ServerConfig) {
     this.config = config;
     this.id = `${config.name || 'server'}-${Date.now()}`;
+    this.startedAt = Date.now();
     // dist/ sits next to this file both in the repo and in the nix/docker image
     this.distDir = path.join(path.dirname(fileURLToPath(import.meta.url)), 'dist');
     this.clients = new Map();
@@ -204,6 +206,7 @@ class MorseRelayServer {
       nick: 'anon',
       rooms: new Set(),
       msgTimes: [],
+      connectedAt: Date.now(),
     });
 
     ws.on('message', (data) => {
@@ -265,6 +268,7 @@ class MorseRelayServer {
         roomClients.delete(ws);
         if (roomClients.size === 0) {
           this.rooms.delete(room);
+          this.broadcastRoomList();
         } else {
           // Send updated presence
           const nicks = Array.from(roomClients).map((c) => this.clients.get(c)?.nick || 'anon');
@@ -337,6 +341,22 @@ class MorseRelayServer {
         this.handleDeleteRoom(ws, msg);
         break;
 
+      case 'admin-stats':
+        this.handleAdminStats(ws);
+        break;
+
+      case 'admin-kick':
+        this.handleAdminKick(ws, msg);
+        break;
+
+      case 'admin-set-pass':
+        this.handleAdminSetPass(ws, msg);
+        break;
+
+      case 'admin-broadcast':
+        this.handleAdminBroadcast(ws, msg);
+        break;
+
       default:
         console.warn(`[${client.id}/${client.nick}] unknown message type: ${msg.t}`);
     }
@@ -384,11 +404,12 @@ class MorseRelayServer {
 
     // Join new room
     client.rooms.add(room);
-    
+
     let roomClients = this.rooms.get(room);
     if (!roomClients) {
       roomClients = new Set();
       this.rooms.set(room, roomClients);
+      this.broadcastRoomList();
     }
     roomClients.add(ws);
 
@@ -420,6 +441,7 @@ class MorseRelayServer {
       roomClients.delete(ws);
       if (roomClients.size === 0) {
         this.rooms.delete(room);
+        this.broadcastRoomList();
       } else {
         // Send updated presence
         const nicks = Array.from(roomClients).map((c) => this.clients.get(c)?.nick || 'anon');
@@ -465,11 +487,23 @@ class MorseRelayServer {
     });
   }
 
-  private handleAnnounce(ws: WebSocket, msg: any): void {
+  // Guard for admin-only actions; replies with a traceable error when denied.
+  private requireAdmin(ws: WebSocket, action: string): boolean {
     if (!this.admins.has(ws)) {
+      console.warn(`[${this.clients.get(ws)?.id || 'unknown'}] admin action "${action}" denied: not authorized`);
       this.send(ws, { t: 'error', msg: 'not authorized' });
-      return;
+      return false;
     }
+    return true;
+  }
+
+  private adminLog(ws: WebSocket, action: string, detail: string): void {
+    const admin = this.clients.get(ws);
+    console.log(`[admin ${admin?.id || 'unknown'}/${admin?.nick || 'anon'}] ${action}: ${detail}`);
+  }
+
+  private handleAnnounce(ws: WebSocket, msg: any): void {
+    if (!this.requireAdmin(ws, 'announce')) return;
 
     // Announce is kept for admin visibility but doesn't propagate to other servers
     console.log(`Server announced: ${msg.name || msg.host} at ${msg.host}:${msg.port}`);
@@ -484,39 +518,38 @@ class MorseRelayServer {
       given.length !== expected.length ||
       !timingSafeEqual(Buffer.from(given), Buffer.from(expected))
     ) {
+      console.warn(`[${this.clients.get(ws)?.id || 'unknown'}] admin auth failed`);
       this.send(ws, { t: 'error', msg: 'invalid token' });
       return;
     }
 
     this.admins.add(ws);
+    console.log(`[${this.clients.get(ws)?.id || 'unknown'}/${this.clients.get(ws)?.nick || 'anon'}] admin auth ok`);
     this.send(ws, { t: 'admin-ok' });
   }
 
   private handleCreateRoom(ws: WebSocket, msg: any): void {
-    if (!this.admins.has(ws)) {
-      this.send(ws, { t: 'error', msg: 'not authorized' });
-      return;
-    }
+    if (!this.requireAdmin(ws, 'create-room')) return;
 
     const room = this.sanitizeRoom(msg.room);
-    const pass = msg.pass;
+    const pass = typeof msg.pass === 'string' ? msg.pass.slice(0, 256) : '';
     if (!room) {
       this.send(ws, { t: 'error', msg: 'invalid room name' });
       return;
     }
 
     if (pass) {
-      const hash = this.sha256(pass);
-      this.roomPasses.set(room, hash);
-      this.send(ws, { t: 'admin-ok', msg: `room ${room} created with password` });
+      this.roomPasses.set(room, this.sha256(pass));
+      this.adminLog(ws, 'create-room', `#${room} with password`);
+      this.send(ws, { t: 'admin-ok', msg: `room #${room} created with password` });
+    } else {
+      this.adminLog(ws, 'create-room', `#${room} (no password)`);
+      this.send(ws, { t: 'admin-ok', msg: `room #${room} created (no password)` });
     }
   }
 
   private handleDeleteRoom(ws: WebSocket, msg: any): void {
-    if (!this.admins.has(ws)) {
-      this.send(ws, { t: 'error', msg: 'not authorized' });
-      return;
-    }
+    if (!this.requireAdmin(ws, 'delete-room')) return;
 
     const room = this.sanitizeRoom(msg.room);
     if (!room) {
@@ -524,8 +557,97 @@ class MorseRelayServer {
       return;
     }
     this.destroyRoom(room);
+    this.broadcastRoomList();
+    this.adminLog(ws, 'delete-room', `#${room}`);
+    this.send(ws, { t: 'admin-ok', msg: `room #${room} deleted` });
+  }
 
-    this.send(ws, { t: 'admin-ok', msg: `room ${room} deleted` });
+  private handleAdminStats(ws: WebSocket): void {
+    if (!this.requireAdmin(ws, 'admin-stats')) return;
+
+    const clients = Array.from(this.clients.values()).map((c) => ({
+      id: c.id,
+      nick: c.nick,
+      rooms: Array.from(c.rooms),
+      connectedAt: c.connectedAt,
+    }));
+    const rooms = Array.from(this.rooms.entries()).map(([name, set]) => ({
+      name,
+      members: Array.from(set).map((c) => this.clients.get(c)?.nick || 'anon'),
+      hasPass: this.roomPasses.has(name),
+    }));
+    this.send(ws, {
+      t: 'admin-stats',
+      name: this.config.name,
+      uptime: Date.now() - this.startedAt,
+      clients,
+      rooms,
+    });
+  }
+
+  private handleAdminKick(ws: WebSocket, msg: any): void {
+    if (!this.requireAdmin(ws, 'admin-kick')) return;
+
+    const targetId = typeof msg.clientId === 'string' ? msg.clientId : '';
+    const reason = typeof msg.reason === 'string' ? msg.reason.slice(0, 200) : '';
+    for (const [socket, info] of this.clients) {
+      if (info.id === targetId) {
+        this.adminLog(ws, 'kick', `${info.nick} (${info.id})${reason ? ` — ${reason}` : ''}`);
+        this.send(socket, { t: 'kicked', msg: reason || undefined });
+        this.removeClient(socket);
+        this.send(ws, { t: 'admin-ok', msg: `kicked ${info.nick}` });
+        return;
+      }
+    }
+    this.send(ws, { t: 'error', msg: `no such client: ${targetId}` });
+  }
+
+  private handleAdminSetPass(ws: WebSocket, msg: any): void {
+    if (!this.requireAdmin(ws, 'admin-set-pass')) return;
+
+    const room = this.sanitizeRoom(msg.room);
+    const pass = typeof msg.pass === 'string' ? msg.pass.slice(0, 256) : '';
+    if (!room) {
+      this.send(ws, { t: 'error', msg: 'invalid room name' });
+      return;
+    }
+
+    if (pass) {
+      this.roomPasses.set(room, this.sha256(pass));
+      this.adminLog(ws, 'set-pass', `#${room} password set`);
+      this.send(ws, { t: 'admin-ok', msg: `password set for #${room}` });
+    } else {
+      this.roomPasses.delete(room);
+      this.adminLog(ws, 'set-pass', `#${room} password removed`);
+      this.send(ws, { t: 'admin-ok', msg: `password removed for #${room}` });
+    }
+  }
+
+  private handleAdminBroadcast(ws: WebSocket, msg: any): void {
+    if (!this.requireAdmin(ws, 'admin-broadcast')) return;
+
+    const text = typeof msg.msg === 'string' ? msg.msg.trim().slice(0, 500) : '';
+    if (!text) {
+      this.send(ws, { t: 'error', msg: 'empty broadcast' });
+      return;
+    }
+
+    const payload = { t: 'admin-broadcast', msg: text };
+    if (msg.room) {
+      const room = this.sanitizeRoom(msg.room);
+      const roomClients = this.rooms.get(room);
+      if (!roomClients) {
+        this.send(ws, { t: 'error', msg: `no such room: #${room}` });
+        return;
+      }
+      for (const c of roomClients) this.send(c, payload);
+      this.adminLog(ws, 'broadcast', `#${room} (${roomClients.size} clients): ${text}`);
+      this.send(ws, { t: 'admin-ok', msg: `broadcast sent to #${room} (${roomClients.size} clients)` });
+    } else {
+      for (const c of this.clients.keys()) this.send(c, payload);
+      this.adminLog(ws, 'broadcast', `all (${this.clients.size} clients): ${text}`);
+      this.send(ws, { t: 'admin-ok', msg: `broadcast sent to all (${this.clients.size} clients)` });
+    }
   }
 
   private destroyRoom(room: string): void {
@@ -548,6 +670,15 @@ class MorseRelayServer {
       if (c !== exclude && c.readyState === WebSocket.OPEN) {
         this.send(c, msg);
       }
+    }
+  }
+
+  // Push the current room list to every connected client so the sidebar
+  // stays live when rooms appear or disappear.
+  private broadcastRoomList(): void {
+    const list = Array.from(this.rooms.keys());
+    for (const c of this.clients.keys()) {
+      this.send(c, { t: 'rooms', list });
     }
   }
 }

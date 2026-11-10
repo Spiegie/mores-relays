@@ -112,6 +112,52 @@ did not contain them. Added the standard codes (Ä `.-.-`, Ö `---.`,
 Ü `..--`, ß `...--..`) and included them in the table overlay. Training
 still picks only A-Z0-9.
 
+## 6. Word-gap marker color
+
+The word-gap indicator (flash badge, pause-meter fill and label) was
+rose/red, which reads as an error. The word gap is a normal, successful
+event — the decoder confidently ends a word — so it is now **emerald**.
+The letter gap keeps amber (a mid-scale "keep going" signal), and red
+remains reserved for actual errors and destructive actions (kick, delete,
+stop training).
+
+## 7. Admin panel
+
+**Goal:** admins previously had to send raw WebSocket messages from the
+browser console (documented in DEPLOYMENT.md). They now get a proper
+panel and can manage everything the server exposes.
+
+**Server (`morse-relais.ts`):**
+
+- New admin messages: `admin-stats` (server name, uptime, per-client
+  id/nick/rooms/connect time, per-room members/password flag),
+  `admin-kick` (disconnect a client, it receives `kicked` first),
+  `admin-set-pass` (set or remove a room password — previously
+  impossible without re-creating the room), `admin-broadcast`
+  (announcement to all clients or one room).
+- `create-room` now always replies `admin-ok` (previously silent without
+  a password).
+- The room list is broadcast to every client whenever a room is created
+  or destroyed (first join, last leave, admin delete), so the sidebar
+  stays live without polling.
+- All admin handlers share a `requireAdmin` guard that logs denied
+  attempts, and every admin action logs `[admin <id>/<nick>] <action>:
+  <detail>` server-side — admin actions are traceable after the fact.
+
+**Client (`morse-chat-browser-client.tsx`):**
+
+- Header button "Admin" opens a slide-over panel. Sign-in with the admin
+  token; the token lives in memory only (never persisted) and admin
+  status is re-established automatically on reconnect, matching the
+  server's per-connection model.
+- Panel sections: server overview (name, uptime, client/room counts,
+  polled every 3 s), broadcast (all or current room), rooms
+  (create with optional password, set/remove password, delete),
+  clients (nick, rooms, connect time, kick).
+- `admin-broadcast` arrives as an `announcement:` transcript line;
+  `kicked` as a `kicked by admin` line; both are also visible to
+  non-admin clients.
+
 ## Verification
 
 - `npx tsc --noEmit` — clean.
@@ -127,3 +173,16 @@ still picks only A-Z0-9.
   - Connect, join `#lobby`, key `S` (three dits) via real keyboard
     events, decoded `anon: S` appears in the transcript
   - No browser console errors
+- Admin-panel E2E (19 checks, all passing, plus a second raw WebSocket
+  client "bob" as kick/broadcast target):
+  - Connect, join `#e2e`, open the Admin panel
+  - Wrong token → `error: invalid token`, stays signed out
+  - Correct token → signed in, stats show server name, bob, `#e2e` with
+    2 online
+  - Broadcast to all → feedback, announcement in own transcript, bob
+    receives it
+  - Create room with password, set password on `#e2e` (room then shows
+    "locked"), kick bob (bob receives `kicked` and closes), delete
+    `#e2e` (transcript shows the `room-deleted` event)
+  - No browser console errors; server log shows one `[admin ...]` line
+    per action

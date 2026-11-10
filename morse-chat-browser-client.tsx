@@ -153,6 +153,15 @@ export class ErrorBoundary extends React.Component<{ children: React.ReactNode }
 }
 
 // ---------------------------------------------------------------------------
+//  Helpers
+// ---------------------------------------------------------------------------
+const fmtUptime = (ms: number) => {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+  return h > 0 ? `${h}h ${m}m` : m > 0 ? `${m}m ${sec}s` : `${sec}s`;
+};
+
+// ---------------------------------------------------------------------------
 //  App
 // ---------------------------------------------------------------------------
 export default function App() {
@@ -184,6 +193,26 @@ export default function App() {
   const [mobileMode, setMobileMode] = useState(
     typeof window !== "undefined" && /Mobi|Android|iPhone|iPad|iPod/i.test(window.navigator.userAgent)
   );
+
+  // admin panel — token lives in memory only (never persisted); admin status is
+  // per WebSocket connection, so it is re-established on reconnect
+  const [showAdmin, setShowAdmin] = useState(false);
+  const [isAdmin, setIsAdmin] = useState(false);
+  const isAdminRef = useRef(false);
+  const adminTokenRef = useRef("");
+  const [adminTokenInput, setAdminTokenInput] = useState("");
+  const [adminFeedback, setAdminFeedback] = useState<string | null>(null);
+  const [adminStats, setAdminStats] = useState<{
+    name: string; uptime: number;
+    clients: { id: string; nick: string; rooms: string[]; connectedAt: number }[];
+    rooms: { name: string; members: string[]; hasPass: boolean }[];
+  } | null>(null);
+  const [newRoom, setNewRoom] = useState("");
+  const [newRoomPass, setNewRoomPass] = useState("");
+  const [passRoom, setPassRoom] = useState("");
+  const [passValue, setPassValue] = useState("");
+  const [broadcastText, setBroadcastText] = useState("");
+  const [broadcastTarget, setBroadcastTarget] = useState<"all" | "room">("all");
 
   // morse input
   const [keying, setKeying] = useState(false);
@@ -398,6 +427,10 @@ export default function App() {
     ws.onopen = () => {
       setConnecting(false); setConnected(true);
       ws.send(JSON.stringify({ t: "hello", nick }));
+      // Admin status is per connection — re-authenticate after a reconnect
+      if (isAdminRef.current && adminTokenRef.current) {
+        ws.send(JSON.stringify({ t: "auth", token: adminTokenRef.current }));
+      }
       // Re-join the room we were in (e.g. after a reconnect)
       const r = roomRef.current;
       if (r) {
@@ -410,6 +443,7 @@ export default function App() {
     };
     ws.onclose = (ev) => {
       setConnected(false); setConnecting(false);
+      isAdminRef.current = false; setIsAdmin(false); setAdminStats(null);
       // 1000 = normal close (user reconnect); anything else deserves a trace
       if (ev.code !== 1000) {
         console.error(`WebSocket closed unexpectedly (${wsUrl}): code=${ev.code} reason=${ev.reason || "none"}`);
@@ -476,14 +510,36 @@ export default function App() {
           dec.feed(m.on, m.ts);
           break;
         }
+        case "admin-ok":
+          if (!isAdminRef.current) {
+            isAdminRef.current = true;
+            setIsAdmin(true);
+            setAdminFeedback("signed in as admin");
+          } else {
+            setAdminFeedback(m.msg || "ok");
+          }
+          break;
+        case "admin-stats":
+          setAdminStats({ name: m.name, uptime: m.uptime, clients: m.clients || [], rooms: m.rooms || [] });
+          break;
+        case "admin-broadcast":
+          pushLine({ kind: "event", text: `announcement: ${m.msg}` });
+          break;
+        case "kicked":
+          pushLine({ kind: "event", text: `kicked by admin${m.msg ? `: ${m.msg}` : ""}` });
+          break;
         case "error":
           pushLine({ kind: "event", text: `error: ${m.msg}` });
+          if (showAdmin) setAdminFeedback(`error: ${m.msg}`);
+          if (m.msg === "invalid token" || m.msg === "not authorized") {
+            isAdminRef.current = false; setIsAdmin(false); setAdminStats(null);
+          }
           // server rejected the join — undo local room state
           if (String(m.msg).startsWith("wrong password")) { setRoom(null); setPresence([]); }
           break;
       }
     };
-  }, [wsUrl, nick, pushLine, flushRemoteMsg]);
+  }, [wsUrl, nick, pushLine, flushRemoteMsg, showAdmin]);
 
   // ---- join / leave (room names may carry a BPM: "lobby@300") ----
   const clearRemoteState = useCallback(() => {
@@ -557,6 +613,52 @@ export default function App() {
     if (!ws || ws.readyState !== WebSocket.OPEN || !r) return;
     ws.send(JSON.stringify({ t: "signal", room: r, on, ts: Date.now() }));
   }, []);
+
+  // ---- admin panel actions ----
+  const sendAdmin = useCallback((msg: Record<string, unknown>) => {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      setAdminFeedback("not connected");
+      return false;
+    }
+    ws.send(JSON.stringify(msg));
+    return true;
+  }, []);
+
+  const adminAuth = useCallback(() => {
+    if (!adminTokenInput) { setAdminFeedback("enter the admin token"); return; }
+    adminTokenRef.current = adminTokenInput;
+    if (sendAdmin({ t: "auth", token: adminTokenInput })) setAdminFeedback("signing in…");
+  }, [adminTokenInput, sendAdmin]);
+
+  const adminCreateRoom = useCallback(() => {
+    const r = newRoom.replace(/^#/, "").trim();
+    if (!r) { setAdminFeedback("enter a room name"); return; }
+    sendAdmin({ t: "create-room", room: r, pass: newRoomPass || undefined });
+    setNewRoom(""); setNewRoomPass("");
+  }, [newRoom, newRoomPass, sendAdmin]);
+
+  const adminSetPass = useCallback(() => {
+    const r = passRoom.replace(/^#/, "").trim();
+    if (!r) { setAdminFeedback("enter a room name"); return; }
+    sendAdmin({ t: "admin-set-pass", room: r, pass: passValue });
+    setPassRoom(""); setPassValue("");
+  }, [passRoom, passValue, sendAdmin]);
+
+  const adminBroadcast = useCallback(() => {
+    const text = broadcastText.trim();
+    if (!text) { setAdminFeedback("enter an announcement"); return; }
+    sendAdmin({ t: "admin-broadcast", msg: text, room: broadcastTarget === "room" ? roomRef.current : undefined });
+    setBroadcastText("");
+  }, [broadcastText, broadcastTarget, sendAdmin]);
+
+  // poll stats while the panel is open and we are signed in
+  useEffect(() => {
+    if (!showAdmin || !isAdmin) return;
+    sendAdmin({ t: "admin-stats" });
+    const iv = setInterval(() => sendAdmin({ t: "admin-stats" }), 3000);
+    return () => clearInterval(iv);
+  }, [showAdmin, isAdmin, sendAdmin]);
 
   // ---- shared key-down / key-up (keyboard + touch button) ----
   const stopPauseMeter = useCallback(() => {
@@ -670,6 +772,9 @@ export default function App() {
         <span className="text-zinc-400 text-sm">Morse Chat</span>
         <span className="text-xs text-zinc-500 border border-zinc-700 rounded px-1.5 py-0.5">{bpm} BPM</span>
         <button onClick={() => setShowTable((v) => !v)} className="text-xs text-zinc-400 hover:text-amber-400 border border-zinc-700 rounded px-1.5 py-0.5">·— Table</button>
+        <button onClick={() => setShowAdmin(true)} className="text-xs text-zinc-400 hover:text-amber-400 border border-zinc-700 rounded px-1.5 py-0.5">
+          Admin{isAdmin && <span className="text-emerald-400 ml-1">●</span>}
+        </button>
         <div className="ml-auto flex items-center gap-2">
           <span className={`h-2.5 w-2.5 rounded-full ${connected ? "bg-emerald-500" : connecting ? "bg-amber-500 animate-pulse" : "bg-zinc-600"}`} />
           <span className="text-xs text-zinc-500">{connected ? "connected" : connecting ? "connecting…" : "disconnected"}</span>
@@ -859,7 +964,7 @@ export default function App() {
                 key={gapFlash.id}
                 className={`text-xs font-bold rounded px-1.5 py-0.5 ${
                   gapFlash.kind === "word"
-                    ? "bg-rose-500/20 text-rose-400 border border-rose-500/50 animate-[gapflash_0.9s_ease-out]"
+                    ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/50 animate-[gapflash_0.9s_ease-out]"
                     : "bg-amber-500/10 text-amber-400 border border-amber-500/30 animate-[gapflash_0.5s_ease-out]"
                 }`}
               >
@@ -877,12 +982,12 @@ export default function App() {
               <div className="relative w-40 h-1.5 bg-zinc-800 rounded overflow-hidden">
                 <div
                   className={`absolute inset-y-0 left-0 rounded transition-colors ${
-                    pauseMs >= timing.wordGap ? "bg-rose-500" : pauseMs >= timing.letterGap ? "bg-amber-500" : "bg-zinc-500"
+                    pauseMs >= timing.wordGap ? "bg-emerald-500" : pauseMs >= timing.letterGap ? "bg-amber-500" : "bg-zinc-500"
                   }`}
                   style={{ width: `${Math.min(100, (pauseMs / timing.wordGap) * 100)}%` }}
                 />
               </div>
-              <span className={`tabular-nums ${pauseMs >= timing.wordGap ? "text-rose-400 font-bold" : "text-zinc-500"}`}>
+              <span className={`tabular-nums ${pauseMs >= timing.wordGap ? "text-emerald-400 font-bold" : "text-zinc-500"}`}>
                 {pauseMs >= timing.wordGap ? "␣ word gap" : `${Math.round(pauseMs)}/${Math.round(timing.wordGap)}ms`}
               </span>
             </div>
@@ -954,6 +1059,113 @@ export default function App() {
             <div className="flex justify-between"><span>Dah</span><span>{Math.round(unit * 3)}ms</span></div>
             <div className="flex justify-between"><span>Letter gap</span><span>{Math.round(unit * 1.6)}ms</span></div>
             <div className="flex justify-between"><span>Word gap</span><span>{Math.round(unit * 7)}ms</span></div>
+          </div>
+        </div>
+      )}
+
+      {/* admin panel — slide-over, token-protected */}
+      {showAdmin && (
+        <div className="fixed inset-0 z-50 flex justify-end">
+          <div className="absolute inset-0 bg-zinc-950/60" onClick={() => setShowAdmin(false)} />
+          <div className="relative w-full max-w-md bg-zinc-900 border-l border-zinc-700 overflow-y-auto p-4 flex flex-col gap-4">
+            <div className="flex items-center justify-between">
+              <h2 className="text-sm uppercase tracking-wider text-zinc-400 font-bold">Admin</h2>
+              <button onClick={() => setShowAdmin(false)} className="text-xs text-zinc-500 hover:text-zinc-300">✕ close</button>
+            </div>
+
+            {adminFeedback && (
+              <div className="text-xs text-amber-400 border border-amber-500/30 bg-amber-500/10 rounded px-2 py-1 break-words">{adminFeedback}</div>
+            )}
+
+            {!isAdmin ? (
+              <div className="flex flex-col gap-2">
+                <p className="text-xs text-zinc-500 leading-relaxed">
+                  Sign in with the server's admin token (<code className="text-zinc-400">--admin-token</code> / <code className="text-zinc-400">ADMIN_TOKEN</code>).
+                  The token stays in memory only. Admin status lasts for this connection and is re-established on reconnect.
+                </p>
+                <input
+                  type="password"
+                  value={adminTokenInput}
+                  onChange={(e) => setAdminTokenInput(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter") adminAuth(); }}
+                  placeholder="admin token"
+                  className="bg-zinc-950 border border-zinc-700 rounded px-2 py-1.5 text-sm focus:border-amber-500 outline-none"
+                />
+                <button onClick={adminAuth} className="bg-amber-500 hover:bg-amber-400 text-zinc-950 font-bold rounded px-4 py-1.5 text-sm self-start">Sign in</button>
+              </div>
+            ) : (
+              <>
+                {/* server overview */}
+                {adminStats && (
+                  <div className="text-xs text-zinc-400 space-y-0.5 border border-zinc-800 rounded p-2">
+                    <div className="flex justify-between"><span className="text-zinc-500">Server</span><span className="text-zinc-300">{adminStats.name}</span></div>
+                    <div className="flex justify-between"><span className="text-zinc-500">Uptime</span><span className="text-zinc-300">{fmtUptime(adminStats.uptime)}</span></div>
+                    <div className="flex justify-between"><span className="text-zinc-500">Clients</span><span className="text-zinc-300">{adminStats.clients.length}</span></div>
+                    <div className="flex justify-between"><span className="text-zinc-500">Rooms</span><span className="text-zinc-300">{adminStats.rooms.length}</span></div>
+                  </div>
+                )}
+
+                {/* broadcast */}
+                <div>
+                  <h3 className="text-xs uppercase tracking-wider text-zinc-500 mb-1">Broadcast</h3>
+                  <div className="flex gap-1">
+                    <input
+                      value={broadcastText}
+                      onChange={(e) => setBroadcastText(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === "Enter") adminBroadcast(); }}
+                      placeholder="announcement text"
+                      className="flex-1 bg-zinc-950 border border-zinc-700 rounded px-2 py-1 text-xs focus:border-amber-500 outline-none"
+                    />
+                    <select
+                      value={broadcastTarget}
+                      onChange={(e) => setBroadcastTarget(e.target.value as "all" | "room")}
+                      className="bg-zinc-950 border border-zinc-700 rounded px-1 text-xs text-zinc-400"
+                    >
+                      <option value="all">all</option>
+                      <option value="room" disabled={!room}>{room ? `#${room}` : "current room"}</option>
+                    </select>
+                    <button onClick={adminBroadcast} className="bg-zinc-800 hover:bg-zinc-700 rounded px-2 py-1 text-xs">send</button>
+                  </div>
+                </div>
+
+                {/* rooms */}
+                <div>
+                  <h3 className="text-xs uppercase tracking-wider text-zinc-500 mb-1">Rooms</h3>
+                  {adminStats && adminStats.rooms.length > 0 ? adminStats.rooms.map((r) => (
+                    <div key={r.name} className="flex items-center gap-2 text-xs py-0.5">
+                      <span className="text-amber-400">#{r.name}</span>
+                      <span className="text-zinc-600">{r.members.length} online{r.hasPass ? " · locked" : ""}</span>
+                      <span className="ml-auto" />
+                      <button onClick={() => { setPassRoom(r.name); setPassValue(""); }} className="text-zinc-500 hover:text-zinc-300">pass</button>
+                      <button onClick={() => sendAdmin({ t: "delete-room", room: r.name })} className="text-rose-500 hover:text-rose-400">delete</button>
+                    </div>
+                  )) : <span className="text-zinc-600 text-xs">none</span>}
+                  <div className="flex gap-1 mt-2">
+                    <input value={newRoom} onChange={(e) => setNewRoom(e.target.value)} placeholder="new room" className="flex-1 bg-zinc-950 border border-zinc-700 rounded px-2 py-1 text-xs focus:border-amber-500 outline-none" />
+                    <input value={newRoomPass} onChange={(e) => setNewRoomPass(e.target.value)} placeholder="pass (optional)" className="flex-1 bg-zinc-950 border border-zinc-700 rounded px-2 py-1 text-xs focus:border-amber-500 outline-none" />
+                    <button onClick={adminCreateRoom} className="bg-zinc-800 hover:bg-zinc-700 rounded px-2 py-1 text-xs">create</button>
+                  </div>
+                  <div className="flex gap-1 mt-1">
+                    <input value={passRoom} onChange={(e) => setPassRoom(e.target.value)} placeholder="room" className="w-24 bg-zinc-950 border border-zinc-700 rounded px-2 py-1 text-xs focus:border-amber-500 outline-none" />
+                    <input value={passValue} onChange={(e) => setPassValue(e.target.value)} placeholder="new password (empty removes)" className="flex-1 bg-zinc-950 border border-zinc-700 rounded px-2 py-1 text-xs focus:border-amber-500 outline-none" onKeyDown={(e) => { if (e.key === "Enter") adminSetPass(); }} />
+                    <button onClick={adminSetPass} className="bg-zinc-800 hover:bg-zinc-700 rounded px-2 py-1 text-xs">set</button>
+                  </div>
+                </div>
+
+                {/* clients */}
+                <div>
+                  <h3 className="text-xs uppercase tracking-wider text-zinc-500 mb-1">Clients</h3>
+                  {adminStats && adminStats.clients.length > 0 ? adminStats.clients.map((c) => (
+                    <div key={c.id} className="flex items-center gap-2 text-xs py-0.5">
+                      <span className="text-zinc-300">{c.nick}</span>
+                      <span className="text-zinc-600 truncate max-w-24" title={c.id}>{c.rooms.map((r) => `#${r}`).join(" ") || "—"}</span>
+                      <span className="text-zinc-600 ml-auto tabular-nums">{new Date(c.connectedAt).toLocaleTimeString()}</span>
+                      <button onClick={() => sendAdmin({ t: "admin-kick", clientId: c.id })} className="text-rose-500 hover:text-rose-400">kick</button>
+                    </div>
+                  )) : <span className="text-zinc-600 text-xs">none</span>}
+                </div>
+              </>
+            )}
           </div>
         </div>
       )}
