@@ -11,6 +11,7 @@ const MORSE: Record<string, string> = {
   "4": "....-", "5": ".....", "6": "-....", "7": "--...", "8": "---..", "9": "----.",
   "?": "..--..", "/": "-..-.", "&": ".-...", ":": "---...", "-": "-....-",
   ".": ".-.-.-", ",": "--..--", "'": ".----.", "!": "-.-.--", "@": ".--.-.",
+  "Ä": ".-.-", "Ö": "---.", "Ü": "..--", "ß": "...--..",
 };
 const MORSE_REV: Record<string, string> = Object.fromEntries(
   Object.entries(MORSE).map(([k, v]) => [v, k]),
@@ -941,7 +942,7 @@ export default function App() {
             <button onClick={() => setShowTable(false)} className="text-zinc-500 hover:text-zinc-300 text-xs">✕</button>
           </div>
           <div className="grid grid-cols-2 gap-x-3 gap-y-0.5 text-xs">
-            {Object.entries(MORSE).filter(([k]) => /^[A-Z0-9]$/.test(k)).map(([k, v]) => (
+            {Object.entries(MORSE).filter(([k]) => /^[A-Z0-9ÄÖÜß]$/.test(k)).map(([k, v]) => (
               <div key={k} className="flex justify-between">
                 <span className="text-zinc-300 font-bold">{k}</span>
                 <span className="text-amber-400 tracking-widest">{v.replace(/\./g, "·").replace(/-/g, "—")}</span>

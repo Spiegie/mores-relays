@@ -70,7 +70,7 @@ Health check: `curl http://localhost:7002/health`
 
 ## Deployment
 
-Docker, Buildah/Podman and Docker Compose are described in [DEPLOYMENT.md](DEPLOYMENT.md), including an nginx TLS example (development profile — for production you decide yourself how to expose the service). A Nix flake is provided for Nix users.
+Docker, Buildah/Podman and Docker Compose are described in [DEPLOYMENT.md](DEPLOYMENT.md), including an nginx TLS example (development profile — for production you decide yourself how to expose the service). A Nix flake is provided for Nix users: `nix build` produces the container image, and `nix run .#playwright-mcp` provides a Playwright MCP server (browser automation for AI agents) that uses the nixpkgs Playwright browsers — nothing is downloaded at runtime.
 
 ## Project structure
 
@@ -83,7 +83,9 @@ Docker, Buildah/Podman and Docker Compose are described in [DEPLOYMENT.md](DEPLO
 ├── Dockerfile / Buildahfile         # Container builds
 ├── docker-compose.yml               # Services + development profiles (incl. nginx TLS example)
 ├── nginx.conf                       # TLS termination + WebSocket proxy
-└── flake.nix                        # Nix build & dev shell
+├── nix/playwright-mcp/              # Vendored package.json/lock + wrapper for the flake's Playwright MCP
+├── flake.nix                        # Nix build, Playwright MCP & dev shell
+└── REFACTORING.md                   # Log of refactoring work and its rationale
 ```
 
 ## License

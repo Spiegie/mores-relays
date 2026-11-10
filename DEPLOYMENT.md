@@ -323,3 +323,22 @@ change rooms with `leave` + `join`.
 - `buildah-build.sh` - Buildah build script with color output
 - `docker-compose.yml` - Docker Compose configuration with profiles
 - `nginx.conf` - Nginx reverse proxy configuration with TLS
+
+## Nix
+
+The flake provides two packages (plus the dev shell):
+
+```bash
+# Container image (dockerTools, no Docker daemon required)
+nix build .#dockerImage
+# -> result/ contains the image tarball, load with:
+docker load < result
+
+# Playwright MCP server for browser automation (uses nixpkgs Playwright
+# browsers; nothing is downloaded at runtime)
+nix run .#playwright-mcp
+```
+
+The Playwright MCP is pinned to the `@playwright/mcp` release whose
+`playwright-core` matches the flake's nixpkgs `playwright` version — see
+[REFACTORING.md](REFACTORING.md) for the pinning rule.
