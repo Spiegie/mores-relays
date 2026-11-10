@@ -116,6 +116,7 @@ class MorseRelayServer {
     const rel = path.normalize(pathname).replace(/^[/\\]+/, '');
     const filePath = path.join(this.distDir, rel);
     if (filePath !== this.distDir && !filePath.startsWith(this.distDir + path.sep)) {
+      console.warn(`[http] ${req.method} ${req.url} -> 403 (path traversal blocked)`);
       res.writeHead(403, { 'Content-Type': 'text/plain' });
       res.end('forbidden');
       return;
@@ -126,6 +127,7 @@ class MorseRelayServer {
       if (!path.extname(pathname)) {
         target = path.join(this.distDir, 'index.html');
       } else {
+        console.warn(`[http] ${req.method} ${req.url} -> 404 (not in ${this.distDir})`);
         res.writeHead(404, { 'Content-Type': 'text/plain' });
         res.end('not found');
         return;
@@ -153,7 +155,8 @@ class MorseRelayServer {
       const body = await readFile(target);
       res.writeHead(200, { 'Content-Type': type, 'Cache-Control': cache });
       res.end(req.method === 'HEAD' ? undefined : body);
-    } catch {
+    } catch (err) {
+      console.error(`[http] ${req.method} ${req.url} -> failed to read ${target}:`, err);
       res.writeHead(404, { 'Content-Type': 'text/plain' });
       res.end('not found');
     }
@@ -189,7 +192,7 @@ class MorseRelayServer {
         ws.send(JSON.stringify(msg));
       }
     } catch (err) {
-      console.error('Error sending message:', err);
+      console.error(`[send ${this.clients.get(ws)?.id || 'unknown'}] failed to send:`, err);
     }
   }
 
@@ -229,7 +232,8 @@ class MorseRelayServer {
         }
         this.handleClientMessage(ws, msg);
       } catch (err) {
-        console.error('Error parsing client message:', err);
+        console.error(`[${client.id}] failed to parse message:`, err, `raw: ${data.toString().slice(0, 200)}`);
+        this.send(ws, { t: 'error', msg: 'malformed message' });
       }
     });
 
@@ -238,7 +242,7 @@ class MorseRelayServer {
     });
 
     ws.on('error', (err) => {
-      console.error('Client error:', err);
+      console.error(`[${clientId}] socket error:`, err);
       this.removeClient(ws);
     });
 
@@ -334,7 +338,7 @@ class MorseRelayServer {
         break;
 
       default:
-        console.log('Unknown message type:', msg.t);
+        console.warn(`[${client.id}/${client.nick}] unknown message type: ${msg.t}`);
     }
   }
 
@@ -607,6 +611,16 @@ Browser clients connect to: ws://localhost:<port>
 // ---------------------------------------------------------------------------
 
 const args = process.argv;
+
+// Traceability: log anything that escapes the normal handlers with a full
+// stack before dying, so crashes in production logs are diagnosable.
+process.on('unhandledRejection', (reason) => {
+  console.error('Unhandled promise rejection:', reason);
+});
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught exception:', err);
+  process.exit(1);
+});
 
 if (args.length < 3) {
   printUsage();

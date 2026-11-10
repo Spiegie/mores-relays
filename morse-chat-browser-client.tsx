@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import React, { useState, useRef, useEffect, useCallback } from "react";
 
 // ---------------------------------------------------------------------------
 //  Morse tables
@@ -115,6 +115,39 @@ class MorseDecoder {
     this.lastDown = null;
     if (this.wordTimer) { clearTimeout(this.wordTimer); this.wordTimer = null; }
     this.emitBuf();
+  }
+}
+
+// ---------------------------------------------------------------------------
+//  ErrorBoundary — keeps render crashes traceable instead of a white screen
+// ---------------------------------------------------------------------------
+interface ErrorBoundaryState { error: Error | null }
+
+export class ErrorBoundary extends React.Component<{ children: React.ReactNode }, ErrorBoundaryState> {
+  constructor(props: { children: React.ReactNode }) {
+    super(props);
+    this.state = { error: null };
+  }
+
+  static getDerivedStateFromError(error: Error): ErrorBoundaryState {
+    return { error };
+  }
+
+  componentDidCatch(error: Error, info: React.ErrorInfo) {
+    console.error("UI crashed:", error, info.componentStack);
+  }
+
+  render() {
+    if (this.state.error) {
+      return (
+        <div className="min-h-screen bg-zinc-950 text-zinc-200 font-mono p-6 flex flex-col gap-3">
+          <h1 className="text-lg text-rose-400 font-bold">Something went wrong</h1>
+          <pre className="text-xs text-zinc-400 whitespace-pre-wrap">{this.state.error.stack || String(this.state.error)}</pre>
+          <button onClick={() => window.location.reload()} className="bg-amber-500 hover:bg-amber-400 text-zinc-950 font-bold rounded px-4 py-1.5 text-sm self-start">Reload</button>
+        </div>
+      );
+    }
+    return this.props.children;
   }
 }
 
@@ -239,7 +272,7 @@ export default function App() {
     if (t === tr.target) {
       setTraining({ target: randChar(), score: tr.score + 1, streak: tr.streak + 1, feedback: "✓" });
     } else {
-      setTraining({ ...tr, streak: 0, feedback: `✗ das war ${t}` });
+      setTraining({ ...tr, streak: 0, feedback: `✗ that was ${t}` });
     }
   }, []);
 
@@ -279,7 +312,7 @@ export default function App() {
       setCalibrating(false);
       setCalTaps(0);
       setUnitEverywhere(avg);
-      pushLine({ kind: "event", text: `kalibriert: dit ≈ ${Math.round(avg)}ms → ${Math.round(60000 / avg)} BPM` });
+      pushLine({ kind: "event", text: `calibrated: dit ≈ ${Math.round(avg)}ms → ${Math.round(60000 / avg)} BPM` });
     }
   }, [setUnitEverywhere, pushLine]);
 
@@ -288,7 +321,7 @@ export default function App() {
     setCalTaps(0);
     calibratingRef.current = true;
     setCalibrating(true);
-    pushLine({ kind: "event", text: `kalibrierung: tippe ${CAL_TAPS_NEEDED} kurze dits (nur kurz antippen)` });
+    pushLine({ kind: "event", text: `calibration: tap ${CAL_TAPS_NEEDED} short dits (quick taps only)` });
   }, [pushLine]);
 
   const applyBpm = useCallback(() => {
@@ -374,10 +407,24 @@ export default function App() {
         pushLine({ kind: "event", text: `rejoined #${r}` });
       }
     };
-    ws.onclose = () => { setConnected(false); setConnecting(false); };
-    ws.onerror = () => { setConnecting(false); };
+    ws.onclose = (ev) => {
+      setConnected(false); setConnecting(false);
+      // 1000 = normal close (user reconnect); anything else deserves a trace
+      if (ev.code !== 1000) {
+        console.error(`WebSocket closed unexpectedly (${wsUrl}): code=${ev.code} reason=${ev.reason || "none"}`);
+        pushLine({ kind: "event", text: `connection lost (code ${ev.code}${ev.reason ? `: ${ev.reason}` : ""})` });
+      }
+    };
+    ws.onerror = (ev) => {
+      console.error(`WebSocket error (${wsUrl}):`, ev);
+      setConnecting(false);
+    };
     ws.onmessage = (ev: MessageEvent) => {
-      let m: any; try { m = JSON.parse(ev.data); } catch { return; }
+      let m: any;
+      try { m = JSON.parse(ev.data); } catch (err) {
+        console.error("Failed to parse server message:", err, String(ev.data).slice(0, 200));
+        return;
+      }
       switch (m.t) {
         case "welcome":
           setRooms(m.rooms || []);
@@ -464,7 +511,7 @@ export default function App() {
       const bpm = parseInt(m[1], 10);
       if (bpm >= 50 && bpm <= 1200) {
         setUnitEverywhere(60000 / bpm);
-        pushLine({ kind: "event", text: `raum-tempo: ${bpm} BPM` });
+        pushLine({ kind: "event", text: `room tempo: ${bpm} BPM` });
       }
     }
     pushLine({ kind: "event", text: `joined #${r}` });
@@ -621,7 +668,7 @@ export default function App() {
         <span className="text-amber-400 text-lg tracking-widest font-bold">·−· · ·-·· ·- ·· ···</span>
         <span className="text-zinc-400 text-sm">Morse Chat</span>
         <span className="text-xs text-zinc-500 border border-zinc-700 rounded px-1.5 py-0.5">{bpm} BPM</span>
-        <button onClick={() => setShowTable((v) => !v)} className="text-xs text-zinc-400 hover:text-amber-400 border border-zinc-700 rounded px-1.5 py-0.5">·— Tabelle</button>
+        <button onClick={() => setShowTable((v) => !v)} className="text-xs text-zinc-400 hover:text-amber-400 border border-zinc-700 rounded px-1.5 py-0.5">·— Table</button>
         <div className="ml-auto flex items-center gap-2">
           <span className={`h-2.5 w-2.5 rounded-full ${connected ? "bg-emerald-500" : connecting ? "bg-amber-500 animate-pulse" : "bg-zinc-600"}`} />
           <span className="text-xs text-zinc-500">{connected ? "connected" : connecting ? "connecting…" : "disconnected"}</span>
@@ -650,19 +697,29 @@ export default function App() {
         <aside className="md:w-64 border-b md:border-b-0 md:border-r border-zinc-800 p-3 flex flex-col gap-4 overflow-y-auto">
           <div>
             <h2 className="text-xs uppercase tracking-wider text-zinc-500 mb-2">Mode</h2>
-            <div className="flex gap-1 flex-wrap">
+            <div className="flex rounded border border-zinc-700 overflow-hidden">
               <button
                 onClick={() => { if (scratchpad) exitScratchpad(); }}
-                className={`rounded px-2 py-1 text-xs ${!scratchpad && !mobileMode ? "bg-amber-500 text-zinc-950 font-bold" : "bg-zinc-900 text-zinc-500 hover:text-zinc-300"}`}
+                className={`flex-1 px-2 py-1 text-xs ${!scratchpad ? "bg-amber-500 text-zinc-950 font-bold" : "bg-zinc-900 text-zinc-500 hover:text-zinc-300"}`}
               >Chat</button>
               <button
                 onClick={() => { if (!scratchpad) enterScratchpad(); }}
-                className={`rounded px-2 py-1 text-xs ${scratchpad ? "bg-amber-500 text-zinc-950 font-bold" : "bg-zinc-900 text-zinc-500 hover:text-zinc-300"}`}
+                className={`flex-1 px-2 py-1 text-xs border-l border-zinc-700 ${scratchpad ? "bg-amber-500 text-zinc-950 font-bold" : "bg-zinc-900 text-zinc-500 hover:text-zinc-300"}`}
               >Scratchpad</button>
+            </div>
+          </div>
+
+          <div>
+            <h2 className="text-xs uppercase tracking-wider text-zinc-500 mb-2">Input</h2>
+            <div className="flex rounded border border-zinc-700 overflow-hidden">
               <button
-                onClick={() => { setMobileMode((v) => !v); }}
-                className={`rounded px-2 py-1 text-xs ${mobileMode ? "bg-amber-500 text-zinc-950 font-bold" : "bg-zinc-900 text-zinc-500 hover:text-zinc-300"}`}
-              >📱 Mobile</button>
+                onClick={() => setMobileMode(false)}
+                className={`flex-1 px-2 py-1 text-xs ${!mobileMode ? "bg-amber-500 text-zinc-950 font-bold" : "bg-zinc-900 text-zinc-500 hover:text-zinc-300"}`}
+              >Spacebar</button>
+              <button
+                onClick={() => setMobileMode(true)}
+                className={`flex-1 px-2 py-1 text-xs border-l border-zinc-700 ${mobileMode ? "bg-amber-500 text-zinc-950 font-bold" : "bg-zinc-900 text-zinc-500 hover:text-zinc-300"}`}
+              >Touch</button>
             </div>
           </div>
 
@@ -684,7 +741,7 @@ export default function App() {
                   disabled={calibrating}
                   className={`w-full rounded px-2 py-1.5 text-xs mt-2 ${calibrating ? "bg-amber-500/20 text-amber-400 border border-amber-500/50" : "bg-zinc-800 hover:bg-zinc-700"}`}
                 >
-                  {calibrating ? `tippe dits… ${calTaps}/${CAL_TAPS_NEEDED}` : "Kalibrieren"}
+                  {calibrating ? `key dits… ${calTaps}/${CAL_TAPS_NEEDED}` : "Calibrate"}
                 </button>
               </div>
 
@@ -695,7 +752,7 @@ export default function App() {
                   onClick={training ? stopTraining : startTraining}
                   className={`w-full rounded px-2 py-1.5 text-xs ${training ? "bg-rose-500/20 text-rose-400 border border-rose-500/50" : "bg-zinc-800 hover:bg-zinc-700"}`}
                 >
-                  {training ? "Training stoppen" : "Training starten"}
+                  {training ? "Stop training" : "Start training"}
                 </button>
               </div>
             </>
@@ -715,8 +772,8 @@ export default function App() {
               <input value={roomInput} onChange={(e) => setRoomInput(e.target.value)} className="flex-1 bg-zinc-900 border border-zinc-700 rounded px-2 py-1 text-sm focus:border-amber-500 outline-none" placeholder="name@bpm" onKeyDown={(e) => { if (e.key === "Enter") { joinRoom(roomInput.replace(/^#/, ""), passInput || undefined); setPassInput(""); } }} />
               <button onClick={() => { joinRoom(roomInput.replace(/^#/, ""), passInput || undefined); setPassInput(""); }} className="bg-zinc-800 hover:bg-zinc-700 rounded px-2 py-1 text-sm">join</button>
             </div>
-            <input type="password" value={passInput} onChange={(e) => setPassInput(e.target.value)} placeholder="🔑 Passwort (optional, setzt Schutz bei Erstjoin)" className="w-full mt-1 bg-zinc-900 border border-zinc-700 rounded px-2 py-1 text-xs focus:border-amber-500 outline-none" onKeyDown={(e) => { if (e.key === "Enter") { joinRoom(roomInput.replace(/^#/, ""), passInput || undefined); setPassInput(""); } }} />
-            <p className="text-[10px] text-zinc-600 mt-1">mit @bpm-suffix setzt du das raum-tempo, z.b. lobby@300 für langsame, lobby@500 für schnelle schreiber</p>
+            <input type="password" value={passInput} onChange={(e) => setPassInput(e.target.value)} placeholder="Password (optional, protects the room on first join)" className="w-full mt-1 bg-zinc-900 border border-zinc-700 rounded px-2 py-1 text-xs focus:border-amber-500 outline-none" onKeyDown={(e) => { if (e.key === "Enter") { joinRoom(roomInput.replace(/^#/, ""), passInput || undefined); setPassInput(""); } }} />
+            <p className="text-[10px] text-zinc-600 mt-1">an @bpm suffix sets the room tempo, e.g. lobby@300 for slow, lobby@500 for fast keyers</p>
           </div>
 
           <div>
@@ -749,7 +806,7 @@ export default function App() {
               </div>
               <div className="flex-1">
                 <div className={`text-sm font-bold ${training.feedback === "✓" ? "text-emerald-400" : training.feedback ? "text-rose-400" : "text-zinc-500"}`}>
-                  {training.feedback || "keye das zeichen"}
+                  {training.feedback || "key the character"}
                 </div>
                 <div className="text-xs text-zinc-500 mt-1">score {training.score} · streak {training.streak}</div>
               </div>
@@ -767,7 +824,7 @@ export default function App() {
                 <div key={i} className={l.self ? "text-amber-300" : "text-zinc-300"}>
                   <span className="text-zinc-500">{l.nick}:</span> {l.text}
                   {l.signals && l.signals.length > 1 && (
-                    <button onClick={() => playSignals(l.signals!)} className="ml-2 text-xs text-amber-500 hover:text-amber-300 align-middle" title="nachricht anhören">▶</button>
+                    <button onClick={() => playSignals(l.signals!)} className="ml-2 text-xs text-amber-500 hover:text-amber-300 align-middle" title="play message">▶</button>
                   )}
                 </div>
               );
@@ -805,11 +862,11 @@ export default function App() {
                     : "bg-amber-500/10 text-amber-400 border border-amber-500/30 animate-[gapflash_0.5s_ease-out]"
                 }`}
               >
-                {gapFlash.kind === "word" ? "␣ wort-gap" : "· buchstabe"}
+                {gapFlash.kind === "word" ? "␣ word gap" : "· letter"}
               </span>
             )}
             {scratchpad && !localMsg && !localBuf && calibrating && (
-              <span className="text-amber-400 text-xs italic">kalibrierung: tippe kurze dits ({calTaps}/{CAL_TAPS_NEEDED})…</span>
+              <span className="text-amber-400 text-xs italic">calibration: tap short dits ({calTaps}/{CAL_TAPS_NEEDED})…</span>
             )}
           </div>
 
@@ -825,7 +882,7 @@ export default function App() {
                 />
               </div>
               <span className={`tabular-nums ${pauseMs >= timing.wordGap ? "text-rose-400 font-bold" : "text-zinc-500"}`}>
-                {pauseMs >= timing.wordGap ? "␣ wort-gap" : `${Math.round(pauseMs)}/${Math.round(timing.wordGap)}ms`}
+                {pauseMs >= timing.wordGap ? "␣ word gap" : `${Math.round(pauseMs)}/${Math.round(timing.wordGap)}ms`}
               </span>
             </div>
           )}
@@ -880,7 +937,7 @@ export default function App() {
       {showTable && (
         <div className="fixed right-2 bottom-2 z-50 bg-zinc-900 border border-zinc-700 rounded-lg p-3 shadow-2xl max-w-[300px] max-h-[70vh] overflow-y-auto">
           <div className="flex items-center justify-between mb-2">
-            <h2 className="text-xs uppercase tracking-wider text-zinc-500">Morse Tabelle</h2>
+            <h2 className="text-xs uppercase tracking-wider text-zinc-500">Morse Table</h2>
             <button onClick={() => setShowTable(false)} className="text-zinc-500 hover:text-zinc-300 text-xs">✕</button>
           </div>
           <div className="grid grid-cols-2 gap-x-3 gap-y-0.5 text-xs">
@@ -894,8 +951,8 @@ export default function App() {
           <div className="mt-2 pt-2 border-t border-zinc-800 text-[10px] text-zinc-600">
             <div className="flex justify-between"><span>Dit</span><span>{Math.round(unit)}ms</span></div>
             <div className="flex justify-between"><span>Dah</span><span>{Math.round(unit * 3)}ms</span></div>
-            <div className="flex justify-between"><span>Buchstaben-Gap</span><span>{Math.round(unit * 1.6)}ms</span></div>
-            <div className="flex justify-between"><span>Wort-Gap</span><span>{Math.round(unit * 7)}ms</span></div>
+            <div className="flex justify-between"><span>Letter gap</span><span>{Math.round(unit * 1.6)}ms</span></div>
+            <div className="flex justify-between"><span>Word gap</span><span>{Math.round(unit * 7)}ms</span></div>
           </div>
         </div>
       )}
